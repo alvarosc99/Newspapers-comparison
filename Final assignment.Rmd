@@ -1,0 +1,499 @@
+---
+title: "A comparative approach to Spanish newspapers"
+author: '100385774'
+date: "2023-03-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, echo = TRUE)
+```
+
+# A comparative approach to Spanish newspapers
+
+### A Text Mining approach through R
+
+## 1. Introduction and objective
+
+We may have heard people discredit an article from a certain newspaper alluding to its ideology or trajectory, whether it's categorized as left or right-wing. It's reasonable to think that total objectivity is nearly impossible to achieve when talking about certain topics, and for some others being subjective and contributing with a personal and/or ideological view is even necessary. At the end, readers may not only want to know what has happened, but they also need to frame it somehow according to their general beliefs and way of thinking, even if it's seen as an heuristic.
+
+But, are really newspapers that different one from each other depending on this factor? Does the editorial line influence the contents in a clear way, and the way facts are treated and interpreted? Or is this effect more subtle and light than what people think?
+
+Our initial hypothesis is that **the left-right division in editorial lines of newspapers clearly influences the way articles are structured and redacted, and the way the language is used in them**. And what is most important, that this influence is bigger when the government in mandate during that particular time has an opposite political sign. Historically, mass media have had a role in the maintenance or fall of Administrations, as they have a direct impact on citizen's perceptions and opinions too. According to this, during the time span in which the articles were extracted (since 2020), **we expect La Razón to display a more aggresive, negative and confrontational language** than Público.
+
+However, we believe that it can't be all confrontation and harsh language, and we also expect to find common vocabulary and terms for both journals, even though each one then will probably make a different interpretation.
+
+Using **several Text Mining techniques** (sentiment analysis, TF-IDF, n-grams analysis...) we'll try to figure if news from a newspaper from Spain characterized as right-wing (La Razón) presents meaningful differences with one characterized as left-wing, through a set of 58424 news collected from both pages and relative to 5 categories: Economy, Equality, Politics, Spain and Culture. These may be some areas where those mentioned dissimilarities may become more visible, as they may polarize depending on each citizen's ideology.
+
+The used Dataset (*Muñiz Peña, 2021*) was obtained from online sources and is available [here](https://www.kaggle.com/datasets/josemamuiz/noticias-laraznpblico).
+
+## 2. Reading and cleaning the data
+
+### Libraries setting
+
+These are all the libraries we will be using for the work developed later. It's necessary to have them all installed, so please check if you meet this criteria, and if not, install them (you can do so directly from RStudio, through `install.package()`.
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(ggplot2)
+library(patchwork)
+library(stringr)
+library(scales)
+library(textdata)
+library(wordcloud)
+library(reshape2)
+library(forcats)
+library(tidyr)
+library(igraph)
+library(ggraph)
+library(widyr)
+library(tm)
+```
+
+### Data preparation
+
+```{r}
+news <- read.csv("data_larazon_publico_v2.csv")
+```
+
+The first thing we notice when opening the .csv file is that there's not any column indicating whether each article comes from which newspaper. Based on the Dataset's documentation, we know that the first 31477 news are from La Razón and the following from Público, so we'll just create a new column which reflects that (based on the X column, the article ID, which we'll rename) . Also, we notice that there's an extra variable named 'indi', that we assume it has to do with each article's category, but since there's no way to assign each one with a topic, we'll not select.
+
+```{r}
+news <- news %>% 
+  mutate(newspaper = ifelse(X < 31478, "La Razón", "Público")) %>% 
+  select(-c(indi)) %>% 
+  rename("ID" = "X", 
+         "body" = "cuerpo", 
+         "headline" = "titular")
+```
+
+What about the headlines? We may think that if we included them we would maybe add redundant information, but in fact they offer a lot more: the way in which the article is presented to the public, and the words chosen for it, say a lot about the ideological frame used. So, we'll merge the articles' headers and bodies in order to analyze them together.
+
+```{r}
+news <- news %>% 
+  mutate(text = paste(headline, body, sep = ". ")) %>% 
+  mutate(text = str_replace_all(body, "\\.", " ")) %>% #Fixing a little problem in which some words were not correctly separated after a dot, so R took them as a simple word (may affect analysis). 
+  select(-c(headline, body)) #As we've already merged this information into another column, they're not necesssary anymore. 
+```
+
+Now, we should tokenize the articles so that each row is a single word. This technique is also called 'tidying' texts, and is necessary to perform further analysis in which the basic unit is each word (although that word still is contextualized and remains having info about the newspaper and the article where it comes from). The `unnest_tokens()` function will do so, also deleting the punctuation signs, which offer no information in this case.
+
+```{r}
+tidy_news <- news %>% 
+  unnest_tokens(word, text)
+
+tidy_news
+```
+
+Our next step is filtering *stopwords*, this is, words that offer no meaning by themselves. The `tidytext` package has a list of english stopwords, but as our project is based on spanish texts, we need to externally search for them. We used [this list](https://countwordsfree.com/stopwords/spanish) of spanish *stopwords* and integrated them into R:
+
+```{r}
+spastop <- read_csv("stop_words_spanish.txt")
+spastop
+```
+
+And then used `anti_join()` to exclude all tokens from our dataframe with a *stopword*.
+
+```{r}
+tidy_news_clean <- tidy_news %>% 
+  anti_join(spastop)
+
+tidy_news_clean
+```
+
+So, now that we have our dataset ready, let's go on with the analysis.
+
+## 3. Analysis
+
+### a. Word frequencies and correlation
+
+One of the most basic, but at the same time, most important methods to analyze texts is based on the appearance of words and the number of times they do so, as well as the way in which they are usually used next to others. This field is called word frequencies and correlations, and it's a necessary step we should take when looking at the differences between Público and La Razón.
+
+First, let's take a general look to see the most repeated words for both newspapers, with the help of a graph:
+
+```{r}
+tidy_news_clean %>%
+  count(word, sort = TRUE) %>%
+  # We only want to display words mentioned over 30000 times
+  filter(n > 30000) %>% 
+  # Now, reorder words by their appearance frequency
+  mutate(word = reorder(word, n)) %>%
+  # And create the plot
+  ggplot(aes(n, word)) +
+  geom_col(fill = "orange") +
+  theme_minimal() +
+  labs(y = NULL,
+       x = "Word frequency")
+```
+
+At first glance, we may notice that almost all the words appearing as the most mentioned are **political** or have a political meaning in some way: *government*, *party*, *PP*, *president*, *Iglesias*, *Sánchez*, *PSOE*... Another very important source of words appears to be the **economy** and the **judicial power**, which many times are also linked to politics: *euros*, *milions*, *hostelry*, *case*, *court*... And, as another curious aspect, the temporal dimension seems to be important too: '*00*', *hours*, *year*...
+
+We could argue that these are the main topics presented in the analyzed newspapers, with many news presenting, analyzing or giving opinion on political, economic and judicial events. Why the **temporal dimension**? Firstly, there's a great amount of this news that are very related to dates and hours (for example, a legislative measure that starts it effect on a certain hour, some kind of event that happened at a particular time...), and secondly, we think that the COVID pandemic and the successive measures taken in the Spanish context, related to curfews and temporal restrictions to mobility, have a lot to do with this too (remember the dataset compiles news since the pandemic outbreak).
+
+Nonetheless, all these word frequencies do not distinguish between the newspaper where each one comes from (neither it weights adequately, as it's an absolute measure), which is in line with the objective of the Assignment, so we'll split between them to see if there are notable differences in the terms with more usage. Also, we should remember there are more articles from La Razón, so the sample is pretty unbalanced, which may have given more importance to one of them. Let's run the same plot as before, but separated in two:
+
+```{r}
+razplot <- tidy_news_clean %>%
+  # We filter for news in La Razón
+  filter(newspaper == "La Razón") %>% 
+  count(word, sort = TRUE) %>%
+  # Display only the first 15 
+  head(15) %>%
+  mutate(word = reorder(word, n)) %>%
+  # And make the plot
+  ggplot(aes(n, word)) +
+  geom_col(fill = "#0d3567") +
+  labs(y = NULL, 
+       x = "Frequency", 
+       title = "La Razón") +
+  theme_minimal()
+
+# We'll use the same code for Público, with the only difference in the filtering
+pubplot <- tidy_news_clean %>%
+  filter(newspaper == "Público") %>% 
+  count(word, sort = TRUE) %>%
+  head(15) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word)) +
+  geom_col(fill = "#d11031") +
+  labs(y = NULL, 
+       x = "Frequency", 
+       title = "Público") +
+  theme_minimal()
+
+razplot + pubplot #To display both plots side to side. 
+```
+
+The previously mentioned pattern is also present: **politics**, **economy** and **trials** seem to be the most present topics in both. But, it's worth noting how the scope has changed, because each newspaper now makes reference to some specific terms inside that broad topics.
+
+-   It's worth noting that **La Razón**, as more conservative and right-winged, mentions a lot words like hostelry, maximum, 'toque' or interior, as they are usually worried about the consequences the curfew and the COVID restrictions would have on the economic perspectives post-lockdown. Iglesias is also a very common word: the former vice-president of the government was frequently criticized, as he belongs to an opposite ideological spectrum.
+
+-   In the other hand, **Público** makes less reference to those terms and more to other such as case, PP, millions... This is another way of addresing those economic and judicial events, maybe more general. One interesting insight is the difference in how they make reference to us: while La Razón uses persons, Público employs citizens. Maybe this is just trivial, but it may also reflect some ideological conceptions on the role these persons or citizens play (person would be more passive, citizen would be more active, in terms of asking for rights or duties).
+
+-   There are some **common words**, like government, Spain, (political) party, Madrid... This tells us that although views may be different, there's also a shared set of resources they both need to employ.
+
+But, what about the **proportion**? As we said, the sample sizes are different, so using it may be a good way to analyze 'weighting'. The objective is to make a plot comparing the proneness a newspaper has of using some terms in comparison to the other, and confirming if some of these displayed differences still are present or not. This is known as the Term Frequency.
+
+First, make separate datasets for each newspaper:
+
+```{r}
+larazon <- tidy_news_clean %>% 
+  filter(newspaper == "La Razón")
+
+publico <- tidy_news_clean %>% 
+  filter(newspaper == "Público")
+```
+
+Now, let's join them again, calculating the proportion of usage of each word over the total, and using `pivot_wider` to set 2 different columns, one for La Razón and one for Público.
+
+```{r}
+frequency <- bind_rows(larazon, publico) %>% 
+  # We count each word's appearance for each newspaper
+  count(newspaper, word, sort = T) %>%
+  # And manually get the TF
+  group_by(newspaper) %>%
+  mutate(proportion = n / sum(n)) %>% 
+  select(-n) %>% 
+  pivot_wider(names_from = newspaper, values_from = proportion)
+
+frequency
+```
+
+And finally, let's display a graph in which we can visually see this difference. Notice there's a diagonal line: words near it are more-less equally used in both journals, while the ones displayed above are more proportionally used in Público, and the ones below in La Razón.
+
+```{r, out.height=100, out.width=100}
+ggplot(frequency, aes(x = `La Razón`, y = `Público`, 
+                      color = abs(`La Razón` - `Público`))) +
+  geom_abline(color = "gray40", lty = 2) +
+  #you can use geom_jitter to adjust the points location and gain visibility
+  geom_jitter(alpha = 0.1, size = 0.5, width = 0.3, height = 0.3) +
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 0.5) +
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), 
+                       low = "darkslategray4", high = "gray75") +
+  theme(legend.position="none") +
+  labs(y = "Público", x = "La Razón")
+```
+
+As we outlined before, there are some common words like Spain, government... But interesting differences appear (it's recommendable to display the graph in full screen):
+
+-   The **divide around the curfew and the COVID measures** is still present: words like perimetral, 'toque', alarm, hours... Which make reference to the pandemic in one way or another, are markedly more frequent in La Razón. This may have a political reasoning, as the government's sign is left-winged, and the management of the disease may be a good topic in which to criticize and oppose.
+
+-   Although the **economic terms** are present in both publications, **Público** seems to address a lot more the big companies and markets, making reference to their profitability, their benefits, banks... It's very probable that these articles are written in a somehow critical way, as Público usually stands for redistributive measures and the inequality derived from the pandemic also created an opportunity to ask for these. Additionally, they make more reference to others like FACUA, trade unions, 'cotización'... which can make us think again on this left-right divide, as these topics are more commonly mentioned by socialdemocratic and progressive political viewpoints.
+
+-   Another important difference between both is the **international coverage**: La Razón seems to have more interest on worldwide topics and international events, as they tend to mention more some terms related to them (Brahim, Qaeda, Iraq...), at least in the Middle East.
+
+### b. Sentiment analysis
+
+We've already seen how these two newspapers use words differently , basically by selecting ones or others. Now it's time for use to make a sentiment analysis in order to determine the tone and connotations that news have in each newspaper. As we initially specified, our hypothesis is that La Razón, as a conservative journal in a period of time when the government differs from its political sign, will use a harsher, more aggressive and negative vocabulary than Público. We've also checked in point a. that politics is a central element of discussion in both newspapers, so addressing this question feels even more adequate.
+
+To perform any sentiment analysis, we firstly need to use a **lexicon**, this is, a reference to analyze words that gives each one a 'score' depending on their meaning. Again, as we're treating Spanish texts, the R-integrated packages that include lexicons weren't helpful at any point, so we got [this AFINN lexicon](https://rpubs.com/jboscomendoza/analisis_sentimientos_lexico_afinn) adapted to the words we're using. It has some limitations, as it translates the English words and gives the same value in almost all cases, with little adjustments, so we may lose some precision in this process. Nonetheless, it still seems as our best option:
+
+```{r}
+AFINN <- read.csv("lexico_afinn.en.es.csv") %>% 
+  select(-c(Word)) #We delete the english reference, because we won't need them. 
+
+AFINN
+```
+
+Let's calculate the total sentiment, this is, the sum of the scores given to the words depending on their meaning, for each newspaper:
+
+```{r}
+tidy_news_clean %>%
+    inner_join(AFINN, by = c("word" = "Palabra")) %>%
+    group_by(newspaper) %>% 
+    # We now make the total score for each newspaper
+    summarise(total = sum(Puntuacion))
+```
+
+We find a great difference between them, in the direction of our initial hypothesis. However, we face to the same problem as we mentioned during the Words frequencies analysis: La Razón has much many cases in this dataset. So, again let's face it with similar solution, looking for the average:
+
+```{r}
+tidy_news_clean %>%
+    inner_join(AFINN, by = c("word" = "Palabra")) %>%
+    group_by(newspaper) %>% 
+    # Instead of the total score, we compute the average sentiment
+    summarise(Average = sum(Puntuacion)/n())
+```
+
+So, averaging all news for each newspaper, La Razón still gets a more negative score, by a margin of about 0,20. This is not a lot, and may be also biased: What if the number of negative articles was the same, but the ones from La Razón used a lot more negative words? Maybe our unit of analysis should be the number of negative articles, rather than the total sentiment average. Let's see it:
+
+```{r}
+arts_sent <- tidy_news_clean %>%
+    inner_join(AFINN, by = c("word" = "Palabra")) %>%
+    group_by(ID, newspaper) %>% 
+    #Instead of the average, now we count for the number of negative articles
+    summarize(totalart = sum(Puntuacion)) %>%
+    # Filter for negative values
+    filter(totalart < 0) %>% 
+    group_by(newspaper) %>% 
+    summarize(neg_arts = n())
+  
+arts_sent
+```
+
+Again, we aim for the relative values:
+
+```{r}
+arts_sent$total <- c(31477, nrow(news) - 31477) # Remember 31477 is the number of articles from La Razón
+
+arts_sent %>% 
+  summarise(newspaper,
+            proportion = neg_arts/total)
+```
+
+So, we got final results! About a 63% of the articles analyzed from La Razón have a negative total score, in comparison with a 44% from Público's pieces of text. This is a difference of about 20%, which is considerable, and aims in the direction of our hypothesis.
+
+We may also want to visualize which are the most positive and negative words used, in order to distinguish them and see if there are some patterns too.
+
+```{r}
+tidy_news_clean %>%
+  inner_join(AFINN, by = c("word" = "Palabra")) %>%
+  mutate(Puntuacion = ifelse(Puntuacion < 0, "Negative", ifelse(Puntuacion > 0, "Positive", "-"))) %>% 
+  count(word, Puntuacion, sort = TRUE) %>%
+  # Computations to make the plot:
+  acast(word ~ Puntuacion, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("blue", "green"),
+                   max.words = 100)
+```
+
+But again, the value we gain here is comparing both wordclouds side to side, so let's check:
+
+```{r message=FALSE}
+wcraz <- tidy_news_clean %>%
+  filter(newspaper == "La Razón") %>% 
+  inner_join(AFINN, by = c("word" = "Palabra")) %>%
+  mutate(Puntuacion = ifelse(Puntuacion < 0, "Negative", ifelse(Puntuacion > 0, "Positive", "-"))) %>% 
+  count(word, Puntuacion, sort = TRUE) %>%
+  acast(word ~ Puntuacion, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("blue", "green"),
+                   max.words = 100)
+
+```
+
+In the case of **La Razón**, some very notable negative words are related to the **pandemic** (alarm, contagions...), and others talk about violence, justice and economy. Regarding the positive ones, they employ more diverse words: justice, support, happy, agreement... This makes sense, as the overall topics are similar to the ones mentioned in section 3.a.
+
+```{r}
+wcpub <- tidy_news_clean %>%
+  filter(newspaper == "Público") %>% 
+  inner_join(AFINN, by = c("word" = "Palabra")) %>%
+  mutate(Puntuacion = ifelse(Puntuacion < 0, "Negative", ifelse(Puntuacion > 0, "Positive", "-"))) %>% 
+  count(word, Puntuacion, sort = TRUE) %>%
+  acast(word ~ Puntuacion, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("blue", "green"),
+                   max.words = 100)
+```
+
+When looking at **Público**, positive words tend to be very similar to the La Razón ones, which tells us that they share a common language when talking about questions they find to be desirable (it's worth noting that the word popular is probably much more used to make reference to the Partido Popular rather than the adjective). In the case of the negative ones, they tend to be **more distributed**, but in general they also share the same tools and resources, except for some additions (debt, fraud, risk...) that suggest that what we outlined about the financial character of their economic news, through a critic point of view, is confirmed.
+
+### c. TF-IDF
+
+In section 3.a. we counted words and checked for the proportion of times they appeared, comparing both publications. Nonetheless, that approach can be complemented through a TF-IDF analysis', as it takes into account the articles' length and total words, and also informs us about the most distinctive words for each newspaper, in this case. As the Zipf's law states, the terms that appear less are the highest ranked ones, so let's perform this technique in our sample to visualize the results.
+
+First, we tidy the news again but using the `bind_tf_idf` function, which gives us the 3 important parameters we need:
+
+-   TF: Term Frequency
+
+-   IDF: Inverse Document Frequency.
+
+-   TF-IDF: TF\*IDF, tells us which are the most distinctive words for each document, in this case, for articles and newspapers. .
+
+```{r}
+tidy_news_idf <- tidy_news %>%
+  count(newspaper, word, sort = TRUE) %>% 
+  # Function used to automatically obtain the three measures
+  bind_tf_idf(word, newspaper, n) %>%
+  select(-n) %>%
+  arrange(desc(tf_idf))
+
+tidy_news_idf
+```
+
+As our goal is to compare Público and La Razón, let's make two different tables so we can see each distribution.
+
+```{r}
+tidy_news_idf %>% 
+  filter(newspaper == "Público")
+```
+
+```{r}
+tidy_news_idf %>% 
+  filter(newspaper == "La Razón")
+```
+
+It may be difficult to distinguish patterns through the tables, so let's visualize the results and take conclusions from there:
+
+```{r}
+colors <- c("La Razón" = "#0d3567", "Público" = "#d11031") # Colors setting fot the plot
+
+tidy_news_idf %>%
+  group_by(newspaper) %>%
+  # Get the first 20 terms for each
+  slice_max(tf_idf, n = 20) %>%
+  ungroup() %>%
+  # And make the plot
+  ggplot(aes(tf_idf, fct_reorder(word, tf_idf), fill = newspaper)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  facet_wrap(~newspaper, ncol = 2, scales = "free") +
+  labs(x = "TF-IDF", y = NULL)
+```
+
+When looking at this plots, we first notice a very clear aspect: the **most distinctive terms used by Público are almost entirely related to micro and macroeconomics**, as they refer to companies, regulatory organisms, relevant investors, financial terms... This is an interesting and unexpected finding, as we might have thought that as a more left-winged journal this pattern may be the other way around, as the right-winged analysis and conversation usually gives great importance to these kind of topics. In La Razón's case, in the other hand, terms are much more diverse and in many cases they are common nouns, adjectives and verbs, rather than the technical terms that we commented previously.
+
+Again, we notice some of this distinctive words from the conservative case have a marked **negative tone** (self-coup, screw up, desintegrated...), which again aims in the direction of the proposed hypothesis.
+
+### d. Bigrams and correlations
+
+During the previous sections we tokenized texts in single words, or unigrams, but there are more ways to do this technique: the specific name will depend on the number of terms we use in a single token. For example, if we used three words in each token, they would be called trigrams (3-grams). They are all sequences of words that co-occurr in a window of the words that we choose. In our case, as our sample is certainly large and we already had more than 18 million unigrams after cleaning stopwords, we will perform only a bigram analysis, due to the computational power required to be more expeditious in terms of N selection.
+
+To start working on this, we will use the same `unnest_tokens` code from before, with the difference of naming our new column 'bigram', selecting 'ngrams' in the token argument and n equal to two in the adjacent one. Naturally, we'll split the news depending on the newspaper, so we can analyze precisely differences. Let's run it:
+
+#### Público
+
+As we just said, we use the modified `unnest_tokens` function with the parameters to display bigrams.
+
+```{r}
+news_bigrams_pub <- news %>%
+  filter(newspaper == "Público") %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+  filter(!is.na(bigram))
+
+news_bigrams_pub
+```
+
+However, we still have stopwords in this list, so it's necessary to filter when both words of the bigram belong to that category (not if only one belongs, because it may be an important bigram too). Then, we'll count to see the frequency of each bigram. Let's do so and count the total (be patient, as this is the most demanding process of all the analysis):
+
+```{r}
+bigrams_separated_pub <- news_bigrams_pub %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>% 
+  filter(!word1 %in% spastop$word) %>%
+  filter(!word2 %in% spastop$word) %>% 
+  count(word1, word2, sort = TRUE)
+
+bigrams_separated_pub %>% 
+  arrange(desc(n))
+```
+
+The result is a dataframe with stopwords already correctly filtered and the words frequency counted. The next step is to visualize all this bigrams, with a previous filtering on those who appear more than a thousand times (if not it would be extremely dense, and therefore impossible to distinguish anything). It's recommended to display it at full screen:
+
+```{r}
+bigram_for_graph <- bigrams_separated_pub %>%
+  filter(n > 1000) %>%
+  graph_from_data_frame()
+
+set.seed(2017)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_for_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+One of the things we may notice first is that many of the bigrams displayed in the plot are names of **important politicians or public figures**: Pedro Sánchez, Pablo Casado, Pablo Iglesias, Quim Torra, Felipe VI, Santiago Abascal... We even find some trigrams, as we can see in the examples of Isabel Díaz Ayuso or Juan Carlos I. Many other bigrams are related to politics too, as they are institutions, political parties or similar (autonomous communities, general secretariat, supreme court, constitutional court...). However, we're also able to distinguish some bigrams that may not appear in La Razón, as their conservative position may set the focus in other topics: this are the cases of far-right, human rights, historical memory... These are typically used from leftist sectors, whether to display criticism (with far-right) or support to social and activist causes (the rest).
+
+#### La Razón
+
+Let's now make the same analysis for our other unit of analysis, so we can confirm if the differences that we hypothesized that could exist actually do so or not.
+
+```{r}
+news_bigrams_raz <- news %>%
+  filter(newspaper == "La Razón") %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) %>%
+  filter(!is.na(bigram))
+
+news_bigrams_raz
+```
+
+```{r}
+bigrams_separated_raz <- news_bigrams_raz %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>% 
+  filter(!word1 %in% spastop$word) %>%
+  filter(!word2 %in% spastop$word) %>% 
+  count(word1, word2, sort = TRUE)
+
+bigrams_separated_raz %>% 
+  arrange(desc(n))
+```
+
+In this case, we will set the filter in 2500 occurrences, because there are more articles and observations than in Público.
+
+```{r}
+bigram_for_graph <- bigrams_separated_raz %>%
+  filter(n > 2500) %>%
+  graph_from_data_frame()
+
+set.seed(2017)
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+
+ggraph(bigram_for_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE,
+                 arrow = a, end_cap = circle(.07, 'inches')) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()
+```
+
+Again, we see the bigrams for important personalities in the spanish political context, although they are less frequent in comparison with Público. There are also a lot of bigrams making reference to the same state institutions and administrative units, but what calls our attention the most is the amount of bigrams related to the pandemic: night leisure, private/public spaces, sportive centers, high risk, maximum capacity, interpersonal distance, perimeter lockdowns... This goes in the same direction as the findings described in previous chapters, and again may reinforce our supposition: the **COVID-19 management** by the Spanish government may have been taken by La Razón as a central point where to make pressure and criticize. It's also worth noting some features we didn't see in the previous plot, such as 15-M, Ramón Espinar or 'express Vistalegre', which all make reference to Unidas Podemos, one of the members of the coalition government that we suppose the journal also refers to negatively in their articles.
+
+## 4. Conclusions
+
+In the present Assignment we've addressed a **complex topic**, and at the same time with high repercussion among many sectors. Are newspapers objective? At what degree do they stick to the facts? Or at what degree do they interpret them to spread an specific point of view among their readers, through a certain vocabulary? Without entering in into the debate of if it's desirable or not, through the applied Text Mining techniques we were able to shed light on this question, facing our initial hypothesis.
+
+Firstly, we discovered that some of the most mentioned terms in all the news have to do with **politics, economy and judicial cases**, as well as with the COVID-19 pandemic. Although further analysis could explore this question through a topic classification approach (we didn't because of computational power constraints), we also checked how the conservative newspaper mentions more frequently words related to the **Pandemic**, maybe as part of a set of critiques on the governmental handling of it. This could be a profitable point where to extract political revenue in some kind, as some political leaders on the right-wing also did.
+
+When studying Term Frequency and the differences in the proportion of times each publication used specific vocabulary, we noticed how Público's writing style mentioned a lot **more financial and economic aspects**, such as companies, investors or technical terms; this suggests they make more emphasis on this than La Razón, which came to our surprise (they focus more on little businesses, such as the local hostelry, again linking it with the pandemic). We also confirmed this finding through the TF-IDF analysis, in which almost all distinctive terms of Público's news were of this nature. Nonetheless, this does not come from a lack of interest of La Razón on international events, as they also tend to mention more some other terms that have to do with International Relations and political events on the Middle East, among others.
+
+One of our main goals was to discover how the tone was used in each daily. Our initial intuition was that, as La Razón is a more right-winged one and the government's sign during the time analyzed is social-democrat, they would be harsher on their measures and therefore, more prone to write and publish critic articles. This would be translated into a more negative language. Through a sentiment analysis we were able to empirically see that this is true, not only in absolute words (percentage of negative words among all used in all the news), but also article-per-article: the **proportion of articles with overall negative lexicon is almost 20% higher on La Razón**. Again, we reinforced the finding of the pandemic's critiques as many of the most mentioned negative words were related to it, while this didn't happen in Público's side.
+
+However, all of this findings rely on one word-per-token analysis, so we expanded it to **bigrams** too so we could explore the interrelation of adjacent ones (again, lack of computational power prevented us from addressing the correlations between them). Our findings were interesing, again pointing to the **pandemic** as a potential conflict point from which to extract political return in some way, and revealing that **La Razón tends to mention leftist political leaders or topics more often**.
+
+In general terms, we managed to capture some relevant similarities and differences between two journals of almost completely opposite political sign: on what terms they concurred and on what others they diverged. To our sight, these are very valuable because they allow us to quantitatively study how this occurs, as at a very subjective matter we need to get some distance from political and moral thoughts when doing it. However, **further approaches** to this question could use more journals, to get a broader point of view (although maintaining the ideological division) and some other techniques we weren't able to, such as correlation analysis, Topic modelling or the study of evolution of them over time (we did not have any temporal reference on our initial data).
